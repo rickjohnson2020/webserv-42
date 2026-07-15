@@ -198,21 +198,24 @@ server {
 
 ```cpp
 class EventLoop {
-  std::vector<struct pollfd>      _pfds;
+  std::vector<struct pollfd>      _pfds;      // 毎ループ作り直す使い捨てスナップショット
   std::map<int, ListenSocket*>    _listeners;
   std::map<int, Connection*>      _conns;
   std::map<int, CgiProcess*>      _cgis;     // CGI パイプ fd -> CgiProcess
 public:
   void addListener(ListenSocket* ls);
-  void registerFd(int fd, short events);     // POLLIN / POLLOUT
-  void modifyEvents(int fd, short events);
-  void unregisterFd(int fd);
   void attachCgi(int pipeFd, CgiProcess* p); // CGI パイプを載せる (第6章)
+  void detachCgi(int pipeFd);                // CGI パイプを外す
   void run();                                // メインループ
 };
 ```
 
-POLLOUT の付け外しの規律: 送信待ちデータがある間だけ `POLLOUT` を立て、送り切ったら下ろす。常時立てると poll が空回りして CPU を浪費する。
+**pollfd 配列は「問い合わせ型」で管理する。** 毎ループ `buildPollFds()` で `_pfds` を作り直し、各 Connection に `wantedEvents()` を聞いて監視イベントを決める。よって `registerFd` / `modifyEvents` / `unregisterFd` のような明示的な登録・変更 API は持たない。
+
+POLLOUT の付け外しの規律: 送信待ちデータがある間だけ `POLLOUT` を立て、送り切ったら下ろす。常時立てると poll が空回りして CPU を浪費する。問い合わせ型ではこれを人が呼び忘れないよう気をつけるのではなく、Connection の状態(WRITING かどうか)から `wantedEvents()` が自動導出するので、**不変条件が構造的に守られる**。Connection → EventLoop は一方向依存(Connection は loop を呼び返さない)。
+
+> **設計判断: 問い合わせ型 vs 命令型**
+> pollfd を保持して差分更新する「命令型」も選べるが、状態との同期漏れや削除時のインデックス調整の罠がある。この規模(接続数が小さく、監視内容を状態から導出できる)では毎ループ再構築の O(N) コストは測定できないほど小さく、問い合わせ型が最適。epoll・数万接続なら命令型が正解になる。
 
 ### 4.2 ListenSocket
 
@@ -247,7 +250,9 @@ public:
   void onReadable();                // recv -> _req に供給 -> 完成なら処理へ
   void onWritable();                // _outBuf を send
   void onCgiDone(const HttpResponse& r); // CGI 完了時に呼ばれる (第6章)
-  bool isTimedOut(time_t now) const;
+  short wantedEvents() const;       // 監視してほしい poll イベント (状態ベース)
+  bool  shouldClose() const;        // CLOSING か (dispatch が走査後にまとめて閉じる)
+  bool  isTimedOut(time_t now) const;
 };
 ```
 
@@ -476,19 +481,19 @@ HttpResponse resp;
 const LocationConfig* loc = Router::match(*_server, _req.path());
 if (loc == NULL) {                      // 一致 location 無し -> 404
     _outBuf = handler.makeError(404, *_server).serialize();
-    _state  = WRITING;
-    loop.modifyEvents(_fd, POLLOUT);
+    _state  = WRITING;   // 次ループの buildPollFds() が wantedEvents() 経由で POLLOUT を立てる
     return;
 }
 HandleResult r = handler.handle(_req, *loc, *_server, *this, resp);
 if (r == RESPONSE_READY) {
     _outBuf = resp.serialize();
-    _state  = WRITING;
-    loop.modifyEvents(_fd, POLLOUT);
+    _state  = WRITING;   // POLLOUT の登録は不要。状態を変えるだけでよい(問い合わせ型)
 } else { // CGI_STARTED
     _state  = CGI_RUNNING;   // 送信は CGI 完了後 (onCgiDone)
 }
 ```
+
+> 問い合わせ型なので Connection は EventLoop の参照を持たず、`loop.modifyEvents(...)` のような呼び返しをしない。状態を `WRITING` にすれば、次ループの `buildPollFds()` が `wantedEvents()` を通じて自動的に POLLOUT を監視する。
 
 ### 7.2 CGI 層 → I/O 層 (最重要)
 
@@ -500,8 +505,7 @@ _owner->onCgiDone(buildResponse());
 
 // Connection::onCgiDone(const HttpResponse& r)
 _outBuf = r.serialize();
-_state  = WRITING;
-loop.modifyEvents(_fd, POLLOUT);
+_state  = WRITING;   // POLLOUT は次ループの wantedEvents() が状態から立てる(問い合わせ型)
 ```
 
 > **ℹ️ ここで2人が必ず合意すべき4点**
@@ -526,7 +530,7 @@ Config は起動時に確定する不変データ。I/O 層は host:port から 
 | HANDLING | (内部) | 同期処理の一瞬の状態。実装上は READING から直接 WRITING へ飛ばしてもよい |
 | CGI_RUNNING | (CGI の fd 側) | クライアント fd は待機。CGI パイプの poll イベントで CgiProcess が進行。onCgiDone で WRITING へ |
 | WRITING | POLLOUT | _outBuf を send。送り切ったら keep-alive なら READING に戻り _req をリセット、close 指定なら CLOSING |
-| CLOSING | — | fd を EventLoop から unregister し close。Connection を破棄 |
+| CLOSING | — | dispatch が走査後に `shouldClose()` を見て、fd を close し `_conns` から除去(Connection を破棄)。次ループの buildPollFds で pollfd からも自然に消える |
 
 > **✅ keep-alive の扱い**
 > - HTTP/1.1 はデフォルト接続維持。送信完了後、Connection: close が無ければ READING に戻り次のリクエストを待つ。

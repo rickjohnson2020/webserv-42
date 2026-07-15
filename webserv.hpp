@@ -331,6 +331,16 @@ public:
     void onReadable();   // recv -> _req.consume() -> 完成なら handle() を呼ぶ
     void onWritable();   // _outBuf を send。送り切ったら keep-alive 判定
 
+    // EventLoop が毎ループ「今どの poll イベントを監視してほしいか」を聞く。
+    // 状態ベースで返す (WRITING 中は POLLOUT、それ以外は POLLIN)。
+    // これが「問い合わせ型」pollfd 管理の要 (EventLoop 側の説明を参照)。
+    // [呼ぶ人] I/O層 (EventLoop::buildPollFds が pollfd を組むとき)
+    short wantedEvents() const;
+
+    // この接続を閉じるべきか (状態が CLOSING か)。
+    // [呼ぶ人] I/O層 (dispatch がイベント処理後、走査を終えてからまとめて閉じる)
+    bool shouldClose() const;
+
     // CGI完了時にHTTP/CGI層から呼ばれ、送信フェーズに入る。
     // [呼ぶ人] CGI層 (CgiProcess が CGI_DONE になったとき)
     void onCgiDone(const HttpResponse& response);
@@ -389,10 +399,12 @@ class EventLoop
 public:
     void addListener(ListenSocket* ls);
 
-    // fdの登録・変更・解除。POLLOUT は送信待ちがあるときだけ立てる。
-    void registerFd(int fd, short events);     // POLLIN / POLLOUT
-    void modifyEvents(int fd, short events);
-    void unregisterFd(int fd);
+    // pollfd 配列は「問い合わせ型」: 毎ループ buildPollFds() で作り直し、
+    // 各 Connection の wantedEvents() を聞いて監視イベントを決める。
+    // よって registerFd / modifyEvents / unregisterFd のような明示的な
+    // 登録・変更 API は持たない。「POLLOUT は送信待ちのときだけ」という不変条件は
+    // Connection の状態から自動導出されるので、呼び忘れで壊れることがない。
+    // (Connection → EventLoop の一方向依存。Connection は loop を呼び返さない)
 
     // CGIのパイプを poll の監視対象に載せる/外す。
     // [呼ぶ人] CGI層 (CgiProcess::start の直後に attach、完了/kill時に detach)
