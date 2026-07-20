@@ -6,7 +6,7 @@
 /*   By: teppeiyamano <teppeiyamano@student.42.f    +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/07/05 19:25:48 by teppeiyaman       #+#    #+#             */
-/*   Updated: 2026/07/18 16:37:20 by teppeiyaman      ###   ########.fr       */
+/*   Updated: 2026/07/20 21:50:52 by teppeiyaman      ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -58,8 +58,8 @@ class   HttpRequest
 public:
     HttpRequest();
     void                consume(const std::string& bytes);
-    bool                isComplete() const; // true if _state == PARSE_COMPLETE
-    bool                hasError() const; // true if _state == PARSE_ERROR
+    bool                isComplete() const;
+    bool                hasError() const;
     
     Method              method() const;
     const std::string&  path() const;

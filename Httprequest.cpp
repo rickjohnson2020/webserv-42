@@ -6,7 +6,7 @@
 /*   By: teppeiyamano <teppeiyamano@student.42.f    +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/07/06 19:20:05 by teppeiyaman       #+#    #+#             */
-/*   Updated: 2026/07/18 16:47:28 by teppeiyaman      ###   ########.fr       */
+/*   Updated: 2026/07/20 21:50:53 by teppeiyaman      ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -129,7 +129,6 @@ bool HttpRequest::parseRequestLine()
         _path = _target.substr(0, qpos);
         _query = _target.substr(qpos + 1);
     }
-    
     if (_path.empty() || _path[0] != '/')
     {
         _state = PARSE_ERROR;
